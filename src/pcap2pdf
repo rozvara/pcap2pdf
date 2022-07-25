@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+
+# `pcap2pdf` creates PDF report of internet/network activity from pcap/pcapng file
+# for each device (MAC address) found in the capture file.
+#
+# This script runs `tshark` in background with stdout redirected to a pipe,
+# and then starts python code which reads that pipe.
+#
+# If you can't run tshark as a regular user, add yourself into
+# wireshark group `sudo usermod -aG wireshark $USER` and logout/login.
+#
+# This file is part of pcap2pdf which is released under GNU GPLv2 license.
+#
+# Copyright 2021, 2022 Jiri Rozvaril <rozvara at vync dot org>
+
+PROGNAME="$(basename $0)"
+
+usage() {
+    echo "Creates PDF report of internet/network activity from pcap/pcapng file."
+    echo
+    echo "Usage: $PROGNAME [OPTION...] FILE"
+    echo
+    echo "Options:"
+    echo "  -h, --help             Show this help and exit"
+    echo "  -a, --anonymize        Anonymize device MAC and don't show hostname"
+    echo "  -c, --cnames           Include CNAMEs in domain list"
+}
+
+error_usage() {
+    usage
+    exit 1
+}
+
+error() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+is_file() {
+   [[ -f "$1" ]]
+}
+
+FNAME=
+CNAMES=
+ANONYMIZE=
+
+GETOPT_ARGS=$(getopt -o "hac" -l "help,anonymize,cnames" -n "$PROGNAME" -- "$@")
+[[ $? -ne 0 ]] && error_usage
+eval set -- "$GETOPT_ARGS"
+while :; do
+    case "$1" in
+         -h|--help)
+            usage
+            exit 0
+            ;;
+         -a|--anonymize)
+            ANONYMIZE=0
+            shift
+            ;;
+         -c|--cnames)
+            CNAMES=0
+            shift
+            ;;
+         --)
+            FNAME="$2"
+            [[ "$FNAME" ]] || error_usage
+            break
+            ;;
+    esac
+done
+
+is_file "$FNAME" || error "file $FNAME not found."
+
+for bin in tshark python3 mkfifo; do
+   [[ $(which "$bin") ]] || error "$bin needed. Please install it first."
+done
+
+# path for regular installation (or current dir for developer)
+APP_PATH="/usr/local/share/org.vync/"
+is_file "pcap2pdf.py" && APP_PATH=
+
+for file in "${APP_PATH}wireowl_backend.py" \
+            "${APP_PATH}wireowl_common.py" \
+            "${APP_PATH}fields.conf" \
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf" \
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf"; do
+   is_file "$file" || error "Missing $file file. Please re-install."
+done
+
+PIPE="/tmp/tshark4pdf.$$.pipe"
+rm "$PIPE" 2> /dev/null
+mkfifo "$PIPE"
+
+py_params() {
+   [[ $CNAMES ]] && echo "--cnames"
+   [[ $ANONYMIZE ]] && echo "--anonymize"
+}
+
+source "${APP_PATH}fields.conf"
+tshark -l -n -Q $FIELDS -r "$FNAME" > "$PIPE" 2> /dev/null &
+TSHARK=$!
+python3 "${APP_PATH}pcap2pdf.py" $(py_params) "$PIPE"
+
+kill $TSHARK 2> /dev/null
+rm "$PIPE" 2> /dev/null
